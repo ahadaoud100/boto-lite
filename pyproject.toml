@@ -1,0 +1,46 @@
+[project]
+name = "boto-lite"
+version = "0.1.0"
+description = "A minimal, zero-dependency (beyond boto3) Python facade over AWS S3, SQS, and Secrets Manager."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Ahmed Hashim", email = "eng.a7md.hashim@gmail.com" }
+]
+maintainers = [
+    { name = "Ahmed Hashim", email = "eng.a7md.hashim@gmail.com" }
+]
+keywords = ["aws", "boto3", "s3", "sqs", "secrets-manager", "facade", "wrapper"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Systems Administration",
+    "Typing :: Typed",
+]
+dependencies = [
+    "boto3>=1.42.89",
+]
+
+[project.urls]
+Homepage = "https://github.com/ahadaoud100/boto-lite"
+Repository = "https://github.com/ahadaoud100/boto-lite"
+Issues = "https://github.com/ahadaoud100/boto-lite/issues"
+
+[dependency-groups]
+dev = [
+    "tiktoken>=0.7.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.12,<0.11.0"]
+build-backend = "uv_build"
