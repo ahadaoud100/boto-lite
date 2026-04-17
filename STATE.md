@@ -1,20 +1,31 @@
 # STATE
 
-_Last updated: 2026-04-17_
+_Last updated: 2026-04-18_
 
 ## Status
-**Published to PyPI as `boto-lite` v0.1.0. Repo is public on GitHub.**
-Red Team architectural audit is **APPROVED and fully landed** across two
-fix passes plus a documentation / commit wrap-up pass. `uv run pytest` →
-32 passed, 2 skipped (the 2 are the LocalStack integration tests, which
-skip cleanly when Docker/LocalStack is not running). No version bump /
-re-release yet — next release still requires the literal user message
-`RELEASE`.
+**Current version: `boto-lite` v0.2.0** — architectural hardening release.
+User authorized the release with the literal `RELEASE` message on
+2026-04-18. Version bumped in `pyproject.toml`, committed, tagged
+`v0.2.0`, and pushed to `origin/main` + the tag to trigger the
+`release.yml` GitHub Action (Trusted Publishing → PyPI).
+
+v0.2.0 is a minor bump (breaking API changes, but pre-1.0 so semver
+permits it on a minor): S3 `get_object` and `list_keys` now return
+generators instead of `bytes` / `list[str]`; every facade function
+gained keyword-only `region_name` / `profile_name` / `config` /
+`session` DI arguments; `secrets.delete` replaced `force: bool` with
+explicit `recovery_window_in_days` / `force_delete_without_recovery`;
+`secrets.get` returns `str | bytes` for `SecretString` / `SecretBinary`.
+
+v0.1.0 was the initial PyPI + public GitHub release. `uv run pytest` →
+32 passed, 2 skipped (integration tests skip when LocalStack is not
+running).
 
 ## What works
 - Distribution name: **`boto-lite`** (PEP 503-normalized; installable as
   `pip install boto-lite`). Import name: **`boto_lite`** (folder at
-  `src/boto_lite/`). Published to PyPI at v0.1.0.
+  `src/boto_lite/`). Published to PyPI at v0.1.0, and v0.2.0 released
+  on 2026-04-18 via the `v0.2.0` tag triggering `release.yml`.
 - Public GitHub repo at `github.com/ahadaoud100/boto-lite`.
 - Runtime still ships with `boto3>=1.42.89` as the sole runtime
   dependency.
@@ -147,11 +158,13 @@ re-release yet — next release still requires the literal user message
 15. ~~Red Team audit fix pass 2 (`audit_fix_2.txt`: S3 streaming,
     session injection, LocalStack integration)~~ ✅
 16. ~~Doc + commit wrap-up (approval revision of `audit_fix.txt`)~~ ✅
-17. Next release — blocked on the literal user message `RELEASE`.
+17. ~~v0.2.0 release — bump + tag + push, triggering Trusted
+    Publishing via `release.yml` (authorized by literal `RELEASE`
+    message on 2026-04-18)~~ ✅
 18. Extended surface (if needed) — presigned URLs, batch SQS, etc.
 19. Wire LocalStack into CI so integration tests run on every PR
     (deferred).
 
 ## Exact next step
-Stop. The refactor is committed locally. Do **not** bump the version,
-tag, or publish until the user types the literal message `RELEASE`.
+Watch the `release.yml` run on the `v0.2.0` tag; confirm v0.2.0 lands on
+PyPI. After that, no further actions without a new user directive.

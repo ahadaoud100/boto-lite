@@ -1,6 +1,6 @@
 [project]
 name = "boto-lite"
-version = "0.1.0"
+version = "0.2.0"
 description = "A minimal, zero-dependency (beyond boto3) Python facade over AWS S3, SQS, and Secrets Manager."
 readme = "README.md"
 license = { text = "MIT" }
