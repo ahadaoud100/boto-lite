@@ -1,179 +1,266 @@
 # boto-lite
 
-A minimal, zero-dependency (beyond `boto3`) Python facade over AWS **S3**, **SQS**, and **Secrets Manager**.
+A tiny, typed facade over AWS **S3**, **SQS**, and **Secrets Manager**.
+One dependency (`boto3`). Flat functions for the common cases, bound
+client classes for repeated work, and a `raw` escape hatch when you
+need the underlying `boto3.client` directly.
 
-Flat public API. Strong types. Predictable errors. Streaming-by-default where it matters. Full dependency injection for sessions and configuration.
+```python
+from boto_lite import s3, sqs, secrets
+
+s3.put_object("my-bucket", "hello.txt", b"hello world")
+body = b"".join(s3.get_object("my-bucket", "hello.txt"))
+
+sqs.send("https://sqs.../my-q", "payload")
+
+api_key = secrets.get("third-party/api-key")
+```
 
 ## Install
 
 ```bash
-pip install boto-lite
-# or
-uv add boto-lite
+pip install boto-lite        # or: uv add boto-lite
 ```
 
-Requires Python 3.10+ and `boto3>=1.42.89`.
+Python 3.10+. Sole runtime dependency: `boto3>=1.42.89`.
 
-## Usage
+## Who this is for
+
+- **One-off scripts** that need to move a few objects in or out of S3
+  without the full boto3 ceremony.
+- **AWS Lambda handlers** where you want readable control flow and
+  typed errors without pulling in a framework.
+- **Small services** that touch S3/SQS/Secrets from a handful of call
+  sites and benefit from a cached client per process.
+- **Local development** against **LocalStack** via `endpoint_url` or a
+  pre-built `boto3.Session`.
+
+If you need the entire S3 surface (multipart, presigned URLs,
+object-level ACLs, replication, …) reach for raw `boto3` or use
+`boto_lite`'s `raw` escape hatch (below). This library covers the
+everyday operations; it doesn't try to wrap every parameter AWS ships.
+
+## Two ways to call it
+
+### 1. Module functions — simplest
+
+Every operation is available as a function on `s3`, `sqs`, or
+`secrets`. Each call builds (or reuses) a cached `boto3.client`.
 
 ```python
-from boto_lite import s3, sqs, secrets, BotoLiteError
-from boto_lite.exceptions import NotFoundError, AuthError, ValidationError
+from boto_lite import s3, sqs, secrets
 
-# ---- S3 ----------------------------------------------------------------
-s3.put_object("my-bucket", "hello.txt", b"hello world")
+s3.put_object("bucket", "k", b"data")
+for key in s3.list_keys("bucket", prefix="logs/"):     # generator
+    ...
 
-# s3.get_object returns a STREAMING GENERATOR of bytes chunks.
-# Stream to disk/socket/etc. without materializing the full body:
-with open("out.bin", "wb") as fh:
-    for chunk in s3.get_object("my-bucket", "hello.txt"):
-        fh.write(chunk)
-# Or join for the full body when it's actually small:
-body: bytes = b"".join(s3.get_object("my-bucket", "hello.txt"))
+sqs.send(queue_url, "payload", delay_seconds=5)
+for msg in sqs.receive(queue_url, max_messages=10, wait_seconds=20):
+    sqs.delete(queue_url, msg.receipt_handle)
 
-# s3.list_keys is a GENERATOR that drives the list_objects_v2 paginator
-# lazily — memory use is bounded by one page (≤1000 keys) regardless of
-# how many keys match.
-for key in s3.list_keys("my-bucket", prefix="logs/"):
-    print(key)
-
-s3.delete_object("my-bucket", "hello.txt")
-
-# ---- SQS ---------------------------------------------------------------
-sqs.send("https://sqs.us-east-1.amazonaws.com/123/my-q", "payload")
-for msg in sqs.receive("https://sqs.us-east-1.amazonaws.com/123/my-q",
-                       max_messages=10, wait_seconds=20):  # long poll
-    print(msg.body)
-    sqs.delete("https://sqs.us-east-1.amazonaws.com/123/my-q",
-               msg.receipt_handle)
-
-# ---- Secrets Manager ---------------------------------------------------
-secrets.put("db/password", "s3cr3t")            # SecretString
-secrets.put("db/cert", b"\x30\x82...")          # SecretBinary
-value: str | bytes = secrets.get("db/password")
-secrets.delete("db/password", force_delete_without_recovery=True)
-# or: secrets.delete("db/password", recovery_window_in_days=7)
+secrets.put("db/password", "s3cr3t")
+value = secrets.get("db/password")                     # str | bytes
 ```
 
-## Streaming & pagination
+### 2. Bound clients — when you make many calls
 
-- **`s3.get_object(bucket, key, ...) -> Iterator[bytes]`** — returns a
-  generator over `StreamingBody.iter_chunks()`. The object body is never
-  fully materialized by the facade; you iterate it chunk by chunk.
-- **`s3.list_keys(bucket, prefix, ...) -> Iterator[str]`** — returns a
-  generator that drives `list_objects_v2`'s paginator and `yield`s each
-  key. Pages are fetched on demand, so a listing of millions of keys
-  uses constant memory.
+`S3Client`, `SQSClient`, and `SecretsClient` build the underlying
+`boto3.client` exactly once in their constructor and reuse it for every
+method. Use them when the same handler calls `put_object` ten times,
+or when you want a single object to pass around.
 
-Both are lazy: exceptions (including translated `NotFoundError`,
-`AuthError`, `ValidationError`, and base `BotoLiteError`) surface on the
-first `next()`, not at the `get_object(...)` / `list_keys(...)` call
-site.
+```python
+from boto_lite import S3Client, SQSClient, SecretsClient
+
+s3c = S3Client(region_name="eu-west-1")
+for k in s3c.list_keys("bkt", prefix="2026/"):
+    s3c.delete_object("bkt", k)
+
+sqsc = SQSClient(endpoint_url="http://localhost:4566")    # LocalStack
+msg_id = sqsc.send(queue_url, "hi",
+                   message_group_id="g1",
+                   message_deduplication_id="d1")        # FIFO
+
+sec = SecretsClient(profile_name="prod")
+current = sec.get("api/key")
+previous = sec.get("api/key", version_stage="AWSPREVIOUS")
+```
+
+Each class exposes the same DI keyword arguments as the module
+functions: `region_name`, `profile_name`, `config`, `endpoint_url`,
+`session`.
+
+### Escape hatch: `.raw`
+
+Every bound client exposes the underlying `boto3.client` via `.raw`.
+Reach through it whenever you need a feature this library doesn't
+wrap — you keep the cached client, the credentials, the endpoint, and
+the config.
+
+```python
+s3c = S3Client()
+presigned = s3c.raw.generate_presigned_url(
+    "get_object", Params={"Bucket": "b", "Key": "k"}, ExpiresIn=3600,
+)
+```
+
+## Streaming and pagination
+
+`s3.get_object` and `s3.list_keys` are generators. Bodies are streamed
+in chunks; listings are paginated lazily.
+
+```python
+# Stream a large object straight to disk — never loaded fully into RAM.
+with open("out.bin", "wb") as fh:
+    for chunk in s3.get_object("b", "huge.bin"):
+        fh.write(chunk)
+
+# Walk millions of keys with bounded memory (one page at a time).
+for key in s3.list_keys("b", prefix="logs/"):
+    ...
+```
+
+The streaming generator closes the underlying `StreamingBody` on
+normal completion, early `break`, and exceptions raised by the
+consumer — no leaked urllib3 connections.
+
+If you want a full `bytes` value:
+
+```python
+body = b"".join(s3.get_object("b", "small.json"))
+```
 
 ## Dependency injection
 
-Every public function in `s3`, `sqs`, and `secrets` accepts the same set
-of keyword-only dependency-injection arguments:
+All public functions and bound-client constructors accept the same
+keyword-only arguments:
 
-| Argument | Type | Behavior |
-|---|---|---|
-| `region_name` | `str \| None` | AWS region override. |
-| `profile_name` | `str \| None` | Named profile from `~/.aws/credentials`. |
-| `config` | `botocore.config.Config \| None` | Full retry / timeout / addressing-style override. **Bypasses the internal client cache.** |
-| `session` | `boto3.Session \| None` | Use this pre-built session directly. **Bypasses the internal client cache entirely**; `boto3.Session(...)` is never called. |
-
-Examples:
+| Argument        | Type                          | Notes                                                             |
+|-----------------|-------------------------------|-------------------------------------------------------------------|
+| `region_name`   | `str \| None`                 | AWS region.                                                       |
+| `profile_name`  | `str \| None`                 | Named profile from `~/.aws/credentials`.                          |
+| `endpoint_url`  | `str \| None`                 | Custom endpoint (LocalStack, MinIO, VPC endpoints…). First-class. |
+| `config`        | `botocore.config.Config`      | Timeouts/retries/etc. Bypasses the internal cache.                |
+| `session`       | `boto3.Session`               | Pre-built session — used directly; bypasses the internal cache.   |
 
 ```python
 import boto3
 from botocore.config import Config
 
-# Named profile + specific region:
-s3.put_object("my-bucket", "k", b"v",
-              profile_name="prod", region_name="eu-west-1")
+# LocalStack
+s3.put_object("b", "k", b"v", endpoint_url="http://localhost:4566")
 
-# Custom retry / timeout behavior:
+# Assumed-role session from STS, reused across calls
+session = boto3.Session(...)
+for k in s3.list_keys("b", session=session):
+    ...
+
+# Custom retry / timeout policy
 tight = Config(connect_timeout=2, read_timeout=5,
                retries={"max_attempts": 2, "mode": "standard"})
-body = b"".join(s3.get_object("my-bucket", "k", config=tight))
-
-# Full session injection — e.g., an assumed-role session from STS,
-# or a session pointed at LocalStack / a custom endpoint:
-session = boto3.Session(region_name="us-east-1")
-for key in s3.list_keys("my-bucket", session=session):
-    ...
+body = b"".join(s3.get_object("b", "k", config=tight))
 ```
 
-When none of `config` / `session` are passed, clients are cached
-internally per `(service, region_name, profile_name)` behind a
-`threading.Lock` — concurrent callers share a single client without
-racing on first touch.
+With none of `config` / `session`, clients are cached per
+`(service, region_name, profile_name, endpoint_url)` behind a
+`threading.Lock` — threads share a single client safely.
 
 ## Error model
 
-All service calls translate botocore errors into a small typed hierarchy:
+Botocore errors are translated into a small typed hierarchy:
 
-- `NotFoundError` — missing bucket/key/queue/secret.
-- `AuthError` — credentials, signing, or access-denied failures
-  (including `NoCredentialsError`).
-- `ValidationError` — local parameter validation failures
-  (`ParamValidationError`).
+- `NotFoundError` — missing bucket / key / queue / secret.
+- `AuthError` — credentials, signing, access-denied, `NoCredentialsError`.
+- `ValidationError` — local parameter validation failures, including
+  library-side checks (e.g. mutually exclusive delete options).
 - `BotoLiteError` — base class; also catches `EndpointConnectionError`,
-  `ReadTimeoutError`, and any otherwise-unmapped `ClientError`.
+  `ReadTimeoutError`, and unmapped `ClientError`s.
 
-## Why — token benchmark
+```python
+from boto_lite.exceptions import NotFoundError, AuthError, BotoLiteError
 
-A typical "upload a file to S3 and read it back" script, in raw `boto3` (with the error handling everyone eventually writes) vs. the `boto_lite` facade:
+try:
+    value = secrets.get("missing")
+except NotFoundError:
+    value = None
+```
 
-| Version | Tokens (cl100k_base) | Lines |
-|---|---:|---:|
-| Raw `boto3` | **186** | 19 |
-| `boto_lite` facade | **65** | 9 |
-| **Saved** | **121 (65.1%)** | 10 |
+Streaming and listing errors surface on first iteration, not at the
+`get_object(...)` / `list_keys(...)` call site — that's the cost of
+lazy evaluation. Wrap the iterator, not the call.
 
-Reproduce locally:
+## Scope and non-goals
+
+**Covered today:**
+
+- **S3**: `get_object` (streaming), `put_object`, `delete_object`,
+  `list_keys` (paginated generator).
+- **SQS**: `send` (attrs, delay, FIFO group/dedup ids), `receive`
+  (short or long poll), `delete`, a frozen `Message` dataclass.
+- **Secrets Manager**: `get` (string or binary, with `version_id` /
+  `version_stage`), `put` (create-or-update, string or binary),
+  `delete` (`recovery_window_in_days` or
+  `force_delete_without_recovery`).
+- Cross-cutting: thread-safe cached clients, session/endpoint/profile
+  injection, typed error translation.
+
+**Explicit non-goals:**
+
+- Wrapping every AWS API surface. If a feature isn't here, use `.raw`
+  or raw `boto3`.
+- Async. `boto-lite` is sync-only; use `aioboto3` if you need asyncio.
+- Multi-cloud abstraction. This is an AWS facade.
+- Retry policy innovation. We defer entirely to botocore's retry
+  handling — override it via `config`.
+
+## Performance
+
+This library is a thin wrapper over `boto3`. On the critical path the
+extra work is a dict lookup in the client cache and a translate-errors
+context manager around the AWS call. You should not see measurable
+throughput or latency differences versus a well-written raw-boto3
+client that reuses its `boto3.client` instance.
+
+What you should **not** do: construct `boto3.client(...)` on every
+call. That rebuilds a session and walks botocore's loader — it's the
+expensive thing, and it's exactly what `boto-lite`'s cache and
+bound-client classes avoid.
+
+Runtime micro-benchmarks against LocalStack live in
+[`benchmark_runtime.py`](./benchmark_runtime.py). A separate
+[`benchmark_tokens.py`](./benchmark_tokens.py) compares source length
+between raw-boto3 and the facade (not a runtime metric; just for
+readability comparisons).
+
+## Testing
+
+Unit tests run fully offline via `botocore.stub.Stubber`:
 
 ```bash
 uv sync --group dev
-uv run python benchmark_tokens.py
-```
-
-Source: [`benchmark_tokens.py`](./benchmark_tokens.py).
-
-## Tests
-
-```bash
 uv run pytest
 ```
 
-The unit tests use `botocore.stub.Stubber` and run fully offline. The
-integration suite (`tests/test_integration.py`) talks to a real
-**LocalStack** instance over the wire, exercising real S3 round-trips
-(put/list/stream-get/delete) and real SQS long-polling. It is skipped
-automatically when LocalStack isn't reachable:
+Integration tests hit a real **LocalStack** instance and exercise wire
+traffic end-to-end. They're skipped cleanly when LocalStack isn't
+reachable.
 
 ```bash
 docker compose up -d localstack
 uv run pytest tests/test_integration.py
 ```
 
-## Scope
+CI runs the unit matrix on {ubuntu, windows, macos} × Python
+{3.10, 3.11, 3.12, 3.13} and the LocalStack integration job on ubuntu.
+See [`.github/workflows/test.yml`](./.github/workflows/test.yml).
 
-Covered today:
+## Contributing
 
-- **S3**: `get_object` (streaming), `put_object`, `delete_object`,
-  `list_keys` (generator over pagination).
-- **SQS**: `send`, `receive` (short or long poll), `delete`, plus a
-  frozen `Message` dataclass.
-- **Secrets Manager**: `get` (string or binary), `put` (create-or-update,
-  string or binary), `delete` (with `recovery_window_in_days` or
-  `force_delete_without_recovery`).
-- **Cross-cutting**: per-call `region_name` / `profile_name` / `config` /
-  `session` injection on every function.
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
-Not yet wrapped (open an issue if you need one): presigned URLs,
-multipart upload, copy/head, batch SQS operations, SQS visibility timeout
-adjustments, FIFO-specific params.
+## Security
+
+See [SECURITY.md](./SECURITY.md) for how to report vulnerabilities.
 
 ## License
 

@@ -7,11 +7,17 @@ from boto_lite.exceptions import (
     NotFoundError,
     ValidationError,
 )
+from boto_lite.s3 import S3Client
+from boto_lite.secrets import SecretsClient
+from boto_lite.sqs import SQSClient
 
 __all__ = [
     "s3",
     "secrets",
     "sqs",
+    "S3Client",
+    "SQSClient",
+    "SecretsClient",
     "BotoLiteError",
     "NotFoundError",
     "AuthError",

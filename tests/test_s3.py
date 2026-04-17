@@ -9,6 +9,7 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 import types
 import unittest
 from io import BytesIO
+from unittest.mock import MagicMock
 
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
@@ -46,7 +47,6 @@ class S3FacadeTest(unittest.TestCase):
             expected_params={"Bucket": "b", "Key": "missing"},
         )
         with self.assertRaises(NotFoundError):
-            # Generator is lazy — error surfaces on first next().
             list(s3.get_object("b", "missing"))
 
     def test_put_object(self) -> None:
@@ -84,6 +84,48 @@ class S3FacadeTest(unittest.TestCase):
         self.assertIsInstance(result, types.GeneratorType)
         self.assertEqual(list(result), ["a", "b", "c"])
         self.stubber.assert_no_pending_responses()
+
+
+class S3StreamCleanupTest(unittest.TestCase):
+    """_stream_body must call Body.close() on early exit, exhaustion, and
+    exceptions — otherwise we leak urllib3 connections on the happy path
+    that matters most (HTTP keep-alive reuse after partial reads)."""
+
+    def _make_body(self, chunks: list[bytes]) -> MagicMock:
+        body = MagicMock()
+        body.iter_chunks.return_value = iter(chunks)
+        return body
+
+    def test_closes_body_on_full_consumption(self) -> None:
+        from boto_lite.s3 import _stream_body
+
+        body = self._make_body([b"a", b"b"])
+        gen = _stream_body({"Body": body})
+        list(gen)
+        body.close.assert_called_once()
+
+    def test_closes_body_on_early_break(self) -> None:
+        from boto_lite.s3 import _stream_body
+
+        body = self._make_body([b"a", b"b", b"c"])
+        gen = _stream_body({"Body": body})
+        for _ in gen:
+            break
+        gen.close()
+        body.close.assert_called_once()
+
+    def test_closes_body_on_exception_in_consumer(self) -> None:
+        from boto_lite.s3 import _stream_body
+
+        body = self._make_body([b"a", b"b"])
+        gen = _stream_body({"Body": body})
+        try:
+            with self.assertRaises(RuntimeError):
+                for _ in gen:
+                    raise RuntimeError("consumer blew up")
+        finally:
+            gen.close()
+        body.close.assert_called_once()
 
 
 if __name__ == "__main__":

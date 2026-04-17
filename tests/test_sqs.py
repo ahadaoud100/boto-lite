@@ -15,6 +15,7 @@ from boto_lite._client import get_client
 from boto_lite.exceptions import NotFoundError
 
 QUEUE = "https://sqs.us-east-1.amazonaws.com/123456789012/q"
+FIFO_QUEUE = "https://sqs.us-east-1.amazonaws.com/123456789012/q.fifo"
 
 
 class SqsFacadeTest(unittest.TestCase):
@@ -31,6 +32,48 @@ class SqsFacadeTest(unittest.TestCase):
             {"QueueUrl": QUEUE, "MessageBody": "hi"},
         )
         self.assertEqual(sqs.send(QUEUE, "hi"), "mid-1")
+
+    def test_send_forwards_message_attributes_and_delay(self) -> None:
+        attrs = {
+            "trace_id": {"DataType": "String", "StringValue": "abc-123"},
+        }
+        self.stubber.add_response(
+            "send_message",
+            {"MessageId": "mid-2", "MD5OfMessageBody": "x"},
+            {
+                "QueueUrl": QUEUE,
+                "MessageBody": "hi",
+                "MessageAttributes": attrs,
+                "DelaySeconds": 5,
+            },
+        )
+        self.assertEqual(
+            sqs.send(
+                QUEUE, "hi", message_attributes=attrs, delay_seconds=5
+            ),
+            "mid-2",
+        )
+
+    def test_send_fifo_params(self) -> None:
+        self.stubber.add_response(
+            "send_message",
+            {"MessageId": "mid-3", "MD5OfMessageBody": "x"},
+            {
+                "QueueUrl": FIFO_QUEUE,
+                "MessageBody": "hi",
+                "MessageGroupId": "g1",
+                "MessageDeduplicationId": "d1",
+            },
+        )
+        self.assertEqual(
+            sqs.send(
+                FIFO_QUEUE,
+                "hi",
+                message_group_id="g1",
+                message_deduplication_id="d1",
+            ),
+            "mid-3",
+        )
 
     def test_receive_parses_messages(self) -> None:
         self.stubber.add_response(

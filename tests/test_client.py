@@ -43,6 +43,11 @@ class GetClientInjectionTest(unittest.TestCase):
         b = get_client("s3", region_name="eu-west-1")
         self.assertIsNot(a, b)
 
+    def test_distinct_endpoint_produces_distinct_client(self) -> None:
+        a = get_client("s3", endpoint_url="http://localhost:4566")
+        b = get_client("s3", endpoint_url="http://localhost:9000")
+        self.assertIsNot(a, b)
+
     def test_custom_config_bypasses_cache(self) -> None:
         cfg = BotoConfig(connect_timeout=1, read_timeout=1, retries={"max_attempts": 1})
         fake_session = MagicMock()
@@ -60,11 +65,17 @@ class GetClientInjectionTest(unittest.TestCase):
         mk.assert_called_once_with(profile_name="prod", region_name="ap-south-1")
         fake_session.client.assert_called_once_with("s3")
 
+    def test_endpoint_url_forwarded_on_cached_path(self) -> None:
+        fake_session = MagicMock()
+        fake_session.client.return_value = object()
+        with patch.object(client_mod.boto3, "Session", return_value=fake_session):
+            get_client("s3", endpoint_url="http://localhost:4566")
+        fake_session.client.assert_called_once_with(
+            "s3", endpoint_url="http://localhost:4566"
+        )
+
 
 class SessionInjectionTest(unittest.TestCase):
-    """Verifies that an injected boto3.Session is used directly and bypasses
-    both the module-level cache and the default Session constructor."""
-
     def setUp(self) -> None:
         self._saved_cache = dict(client_mod._client_cache)
         client_mod._client_cache.clear()
@@ -90,7 +101,6 @@ class SessionInjectionTest(unittest.TestCase):
         get_client("s3", session=fake_session)
         get_client("s3", session=fake_session)
 
-        # Two calls → two client() invocations, and nothing cached.
         self.assertEqual(fake_session.client.call_count, 2)
         self.assertEqual(client_mod._client_cache, {})
 
@@ -103,20 +113,27 @@ class SessionInjectionTest(unittest.TestCase):
 
         default_session_ctor.assert_not_called()
 
-    def test_injected_session_forwards_region_and_config(self) -> None:
+    def test_injected_session_forwards_region_config_and_endpoint(self) -> None:
         fake_session = MagicMock(spec=boto3.Session)
         fake_session.client.return_value = object()
         cfg = BotoConfig(retries={"max_attempts": 1})
 
-        get_client("s3", session=fake_session, region_name="eu-west-2", config=cfg)
+        get_client(
+            "s3",
+            session=fake_session,
+            region_name="eu-west-2",
+            config=cfg,
+            endpoint_url="http://localhost:4566",
+        )
 
         fake_session.client.assert_called_once_with(
-            "s3", region_name="eu-west-2", config=cfg
+            "s3",
+            region_name="eu-west-2",
+            config=cfg,
+            endpoint_url="http://localhost:4566",
         )
 
     def test_facade_session_injection_end_to_end(self) -> None:
-        """s3.put_object with an injected session should call through to
-        that session's client, not the module cache."""
         real_client = boto3.client("s3", region_name="us-east-1")
         stubber = Stubber(real_client)
         stubber.add_response("put_object", {}, {"Bucket": "b", "Key": "k", "Body": b"x"})

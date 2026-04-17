@@ -40,3 +40,12 @@ Thumbs.db
 
 # Local Claude Code overrides (keep shared settings checked in)
 .claude/settings.local.json
+
+# Local agent/prompt scratch — kept on disk, never published
+CLAUDE.md
+.prompts/
+audit_fix.txt
+audit_fix_2.txt
+cq1.txt
+cqlast.txt
+last.txt

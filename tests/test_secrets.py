@@ -12,7 +12,7 @@ from botocore.stub import Stubber
 
 from boto_lite import secrets
 from boto_lite._client import get_client
-from boto_lite.exceptions import NotFoundError
+from boto_lite.exceptions import NotFoundError, ValidationError
 
 _ARN = "arn:aws:secretsmanager:us-east-1:000000000000:secret:foo-AbCdEf"
 
@@ -40,6 +40,25 @@ class SecretsFacadeTest(unittest.TestCase):
             {"SecretId": "cert"},
         )
         self.assertEqual(secrets.get("cert"), payload)
+
+    def test_get_with_version_stage(self) -> None:
+        self.stubber.add_response(
+            "get_secret_value",
+            {"ARN": _ARN, "Name": "foo", "SecretString": "prev"},
+            {"SecretId": "foo", "VersionStage": "AWSPREVIOUS"},
+        )
+        self.assertEqual(
+            secrets.get("foo", version_stage="AWSPREVIOUS"), "prev"
+        )
+
+    def test_get_with_version_id(self) -> None:
+        vid = "11111111-2222-3333-4444-555555555555"
+        self.stubber.add_response(
+            "get_secret_value",
+            {"ARN": _ARN, "Name": "foo", "SecretString": "pinned"},
+            {"SecretId": "foo", "VersionId": vid},
+        )
+        self.assertEqual(secrets.get("foo", version_id=vid), "pinned")
 
     def test_get_missing_raises_not_found(self) -> None:
         self.stubber.add_client_error(
@@ -111,7 +130,7 @@ class SecretsFacadeTest(unittest.TestCase):
         self.stubber.assert_no_pending_responses()
 
     def test_delete_rejects_conflicting_options(self) -> None:
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValidationError):
             secrets.delete(
                 "foo",
                 recovery_window_in_days=7,

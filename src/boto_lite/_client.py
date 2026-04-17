@@ -45,7 +45,10 @@ _AUTH_CODES = frozenset(
 )
 
 
-_client_cache: dict[tuple[str, str | None, str | None], Any] = {}
+# Cache key: (service, region_name, profile_name, endpoint_url). Custom
+# ``config`` and injected ``session`` bypass this cache entirely.
+_ClientCacheKey = tuple[str, str | None, str | None, str | None]
+_client_cache: dict[_ClientCacheKey, Any] = {}
 _client_lock = threading.Lock()
 
 
@@ -56,19 +59,22 @@ def get_client(
     profile_name: str | None = None,
     config: BotoConfig | None = None,
     session: boto3.Session | None = None,
+    endpoint_url: str | None = None,
 ) -> Any:
     """Return a boto3 client for the given AWS service.
 
     - If ``session`` is provided, it is used directly and the internal
-      cache is bypassed entirely. ``region_name`` and ``config`` are
-      still forwarded to ``session.client()`` if supplied; ``profile_name``
-      is ignored because the session already carries its own profile.
+      cache is bypassed. ``region_name``, ``config``, and ``endpoint_url``
+      are still forwarded to ``session.client()`` when supplied;
+      ``profile_name`` is ignored because the session already carries
+      its own profile.
     - If ``config`` is provided without a ``session``, a fresh
       ``boto3.Session`` is built from ``region_name`` / ``profile_name``
       and a new client is returned uncached.
     - Otherwise, clients are cached per
-      ``(service, region_name, profile_name)`` behind a lock so concurrent
-      callers share a single instance without racing on first touch.
+      ``(service, region_name, profile_name, endpoint_url)`` behind a
+      lock so concurrent callers share a single instance without racing
+      on first touch.
     """
     if session is not None:
         kwargs: dict[str, Any] = {}
@@ -76,22 +82,30 @@ def get_client(
             kwargs["region_name"] = region_name
         if config is not None:
             kwargs["config"] = config
+        if endpoint_url is not None:
+            kwargs["endpoint_url"] = endpoint_url
         return session.client(service, **kwargs)
 
     if config is not None:
         new_session = boto3.Session(
             profile_name=profile_name, region_name=region_name
         )
-        return new_session.client(service, config=config)
+        client_kwargs: dict[str, Any] = {"config": config}
+        if endpoint_url is not None:
+            client_kwargs["endpoint_url"] = endpoint_url
+        return new_session.client(service, **client_kwargs)
 
-    key = (service, region_name, profile_name)
+    key: _ClientCacheKey = (service, region_name, profile_name, endpoint_url)
     with _client_lock:
         client = _client_cache.get(key)
         if client is None:
             new_session = boto3.Session(
                 profile_name=profile_name, region_name=region_name
             )
-            client = new_session.client(service)
+            if endpoint_url is not None:
+                client = new_session.client(service, endpoint_url=endpoint_url)
+            else:
+                client = new_session.client(service)
             _client_cache[key] = client
     return client
 
