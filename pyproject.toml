@@ -39,7 +39,11 @@ Issues = "https://github.com/ahadaoud100/boto-lite/issues"
 [dependency-groups]
 dev = [
     "tiktoken>=0.7.0",
+    "pytest>=8.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["uv_build>=0.10.12,<0.11.0"]

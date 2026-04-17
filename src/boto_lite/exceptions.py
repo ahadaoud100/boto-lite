@@ -11,3 +11,7 @@ class NotFoundError(BotoLiteError):
 
 class AuthError(BotoLiteError):
     """Raised when AWS credentials are missing or insufficient."""
+
+
+class ValidationError(BotoLiteError):
+    """Raised when call parameters fail botocore's local validation."""

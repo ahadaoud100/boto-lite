@@ -6,6 +6,7 @@ os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 
+import types
 import unittest
 from io import BytesIO
 
@@ -24,14 +25,18 @@ class S3FacadeTest(unittest.TestCase):
         self.stubber.activate()
         self.addCleanup(self.stubber.deactivate)
 
-    def test_get_object_returns_bytes(self) -> None:
+    def test_get_object_streams_chunks(self) -> None:
         payload = b"hello world"
         self.stubber.add_response(
             "get_object",
             {"Body": StreamingBody(BytesIO(payload), len(payload))},
             {"Bucket": "b", "Key": "k"},
         )
-        self.assertEqual(s3.get_object("b", "k"), payload)
+        result = s3.get_object("b", "k")
+        self.assertIsInstance(result, types.GeneratorType)
+        chunks = list(result)
+        self.assertGreaterEqual(len(chunks), 1)
+        self.assertEqual(b"".join(chunks), payload)
         self.stubber.assert_no_pending_responses()
 
     def test_get_object_missing_raises_not_found(self) -> None:
@@ -41,7 +46,8 @@ class S3FacadeTest(unittest.TestCase):
             expected_params={"Bucket": "b", "Key": "missing"},
         )
         with self.assertRaises(NotFoundError):
-            s3.get_object("b", "missing")
+            # Generator is lazy — error surfaces on first next().
+            list(s3.get_object("b", "missing"))
 
     def test_put_object(self) -> None:
         self.stubber.add_response(
@@ -59,7 +65,7 @@ class S3FacadeTest(unittest.TestCase):
         s3.delete_object("b", "k")
         self.stubber.assert_no_pending_responses()
 
-    def test_list_keys_paginates(self) -> None:
+    def test_list_keys_yields_across_pages(self) -> None:
         self.stubber.add_response(
             "list_objects_v2",
             {
@@ -74,7 +80,9 @@ class S3FacadeTest(unittest.TestCase):
             {"Contents": [{"Key": "c"}], "IsTruncated": False},
             {"Bucket": "bkt", "Prefix": "p/", "ContinuationToken": "tok"},
         )
-        self.assertEqual(s3.list_keys("bkt", "p/"), ["a", "b", "c"])
+        result = s3.list_keys("bkt", "p/")
+        self.assertIsInstance(result, types.GeneratorType)
+        self.assertEqual(list(result), ["a", "b", "c"])
         self.stubber.assert_no_pending_responses()
 
 

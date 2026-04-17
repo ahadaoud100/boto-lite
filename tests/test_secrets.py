@@ -14,6 +14,8 @@ from boto_lite import secrets
 from boto_lite._client import get_client
 from boto_lite.exceptions import NotFoundError
 
+_ARN = "arn:aws:secretsmanager:us-east-1:000000000000:secret:foo-AbCdEf"
+
 
 class SecretsFacadeTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -25,10 +27,19 @@ class SecretsFacadeTest(unittest.TestCase):
     def test_get_returns_secret_string(self) -> None:
         self.stubber.add_response(
             "get_secret_value",
-            {"ARN": "arn:aws:secretsmanager:us-east-1:000000000000:secret:foo-AbCdEf", "Name": "foo", "SecretString": "s3cr3t"},
+            {"ARN": _ARN, "Name": "foo", "SecretString": "s3cr3t"},
             {"SecretId": "foo"},
         )
         self.assertEqual(secrets.get("foo"), "s3cr3t")
+
+    def test_get_returns_secret_binary(self) -> None:
+        payload = b"\x30\x82\x01\x00"
+        self.stubber.add_response(
+            "get_secret_value",
+            {"ARN": _ARN, "Name": "cert", "SecretBinary": payload},
+            {"SecretId": "cert"},
+        )
+        self.assertEqual(secrets.get("cert"), payload)
 
     def test_get_missing_raises_not_found(self) -> None:
         self.stubber.add_client_error(
@@ -42,10 +53,20 @@ class SecretsFacadeTest(unittest.TestCase):
     def test_put_creates_when_absent(self) -> None:
         self.stubber.add_response(
             "create_secret",
-            {"ARN": "arn:aws:secretsmanager:us-east-1:000000000000:secret:foo-AbCdEf", "Name": "foo"},
+            {"ARN": _ARN, "Name": "foo"},
             {"Name": "foo", "SecretString": "v"},
         )
         secrets.put("foo", "v")
+        self.stubber.assert_no_pending_responses()
+
+    def test_put_binary_creates(self) -> None:
+        payload = b"binary-cert-bytes"
+        self.stubber.add_response(
+            "create_secret",
+            {"ARN": _ARN, "Name": "cert"},
+            {"Name": "cert", "SecretBinary": payload},
+        )
+        secrets.put("cert", payload)
         self.stubber.assert_no_pending_responses()
 
     def test_put_updates_when_exists(self) -> None:
@@ -56,20 +77,46 @@ class SecretsFacadeTest(unittest.TestCase):
         )
         self.stubber.add_response(
             "put_secret_value",
-            {"ARN": "arn:aws:secretsmanager:us-east-1:000000000000:secret:foo-AbCdEf", "Name": "foo"},
+            {"ARN": _ARN, "Name": "foo"},
             {"SecretId": "foo", "SecretString": "v"},
         )
         secrets.put("foo", "v")
         self.stubber.assert_no_pending_responses()
 
-    def test_delete_force(self) -> None:
+    def test_delete_force_without_recovery(self) -> None:
         self.stubber.add_response(
             "delete_secret",
-            {"ARN": "arn:aws:secretsmanager:us-east-1:000000000000:secret:foo-AbCdEf", "Name": "foo"},
+            {"ARN": _ARN, "Name": "foo"},
             {"SecretId": "foo", "ForceDeleteWithoutRecovery": True},
         )
-        secrets.delete("foo", force=True)
+        secrets.delete("foo", force_delete_without_recovery=True)
         self.stubber.assert_no_pending_responses()
+
+    def test_delete_with_recovery_window(self) -> None:
+        self.stubber.add_response(
+            "delete_secret",
+            {"ARN": _ARN, "Name": "foo"},
+            {"SecretId": "foo", "RecoveryWindowInDays": 7},
+        )
+        secrets.delete("foo", recovery_window_in_days=7)
+        self.stubber.assert_no_pending_responses()
+
+    def test_delete_default_uses_aws_default_window(self) -> None:
+        self.stubber.add_response(
+            "delete_secret",
+            {"ARN": _ARN, "Name": "foo"},
+            {"SecretId": "foo"},
+        )
+        secrets.delete("foo")
+        self.stubber.assert_no_pending_responses()
+
+    def test_delete_rejects_conflicting_options(self) -> None:
+        with self.assertRaises(ValueError):
+            secrets.delete(
+                "foo",
+                recovery_window_in_days=7,
+                force_delete_without_recovery=True,
+            )
 
 
 if __name__ == "__main__":
