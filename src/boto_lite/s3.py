@@ -7,12 +7,17 @@ unbounded response data into memory.
 
 from __future__ import annotations
 
-from typing import Any, Iterator
+import itertools
+from typing import Any, BinaryIO, Iterable, Iterator, Literal, Mapping
 
 import boto3
 from botocore.config import Config as BotoConfig
 
 from boto_lite._client import get_client, translate_errors
+from boto_lite.exceptions import ValidationError
+
+_MIN_PART_SIZE = 5 * 1024 * 1024  # AWS S3 multipart minimum (except last part)
+_DEFAULT_PART_SIZE = 8 * 1024 * 1024
 
 
 def _stream_body(resp: dict[str, Any]) -> Iterator[bytes]:
@@ -27,6 +32,123 @@ def _stream_body(resp: dict[str, Any]) -> Iterator[bytes]:
                 close()
             except Exception:
                 pass
+
+
+def _iter_parts(
+    data: Iterable[bytes] | BinaryIO, part_size: int
+) -> Iterator[bytes]:
+    """Yield chunks of exactly ``part_size`` bytes (last chunk may be smaller).
+
+    Accepts either an iterable of ``bytes`` (re-chunked) or a file-like
+    object with a ``.read(n)`` method (read directly).
+    """
+    if hasattr(data, "read"):
+        reader: BinaryIO = data  # type: ignore[assignment]
+        while True:
+            buf = reader.read(part_size)
+            if not buf:
+                return
+            yield buf
+        return
+
+    buffer = bytearray()
+    for piece in data:  # type: ignore[union-attr]
+        buffer.extend(piece)
+        while len(buffer) >= part_size:
+            yield bytes(buffer[:part_size])
+            del buffer[:part_size]
+    if buffer:
+        yield bytes(buffer)
+
+
+def _upload_stream_on(
+    client: Any,
+    bucket: str,
+    key: str,
+    data: Iterable[bytes] | BinaryIO,
+    *,
+    part_size: int,
+    content_type: str | None,
+) -> str:
+    if part_size < _MIN_PART_SIZE:
+        raise ValidationError(
+            f"part_size must be at least {_MIN_PART_SIZE} bytes (AWS S3 minimum)"
+        )
+
+    parts = _iter_parts(data, part_size)
+    try:
+        first = next(parts)
+    except StopIteration:
+        first = b""
+    try:
+        second = next(parts)
+    except StopIteration:
+        # Fits in one part: use simple PutObject, skip the multipart machinery.
+        put_kwargs: dict[str, Any] = {"Bucket": bucket, "Key": key, "Body": first}
+        if content_type is not None:
+            put_kwargs["ContentType"] = content_type
+        with translate_errors():
+            resp = client.put_object(**put_kwargs)
+        return resp.get("ETag", "")
+
+    create_kwargs: dict[str, Any] = {"Bucket": bucket, "Key": key}
+    if content_type is not None:
+        create_kwargs["ContentType"] = content_type
+    with translate_errors():
+        create = client.create_multipart_upload(**create_kwargs)
+    upload_id = create["UploadId"]
+
+    completed: list[dict[str, Any]] = []
+    try:
+        for part_number, chunk in enumerate(
+            itertools.chain([first, second], parts), start=1
+        ):
+            with translate_errors():
+                resp = client.upload_part(
+                    Bucket=bucket,
+                    Key=key,
+                    UploadId=upload_id,
+                    PartNumber=part_number,
+                    Body=chunk,
+                )
+            completed.append({"ETag": resp["ETag"], "PartNumber": part_number})
+
+        with translate_errors():
+            result = client.complete_multipart_upload(
+                Bucket=bucket,
+                Key=key,
+                UploadId=upload_id,
+                MultipartUpload={"Parts": completed},
+            )
+        return result.get("ETag", "")
+    except BaseException:
+        try:
+            client.abort_multipart_upload(
+                Bucket=bucket, Key=key, UploadId=upload_id
+            )
+        except Exception:
+            pass
+        raise
+
+
+def _presigned_url_on(
+    client: Any,
+    bucket: str,
+    key: str,
+    *,
+    operation: str,
+    expires_in: int,
+    extra_params: Mapping[str, Any] | None,
+) -> str:
+    params: dict[str, Any] = {"Bucket": bucket, "Key": key}
+    if extra_params:
+        params.update(extra_params)
+    with translate_errors():
+        return client.generate_presigned_url(
+            ClientMethod=operation,
+            Params=params,
+            ExpiresIn=expires_in,
+        )
 
 
 def get_object(
@@ -81,6 +203,85 @@ def put_object(
             endpoint_url=endpoint_url,
         )
         client.put_object(Bucket=bucket, Key=key, Body=body)
+
+
+def upload_stream(
+    bucket: str,
+    key: str,
+    data: Iterable[bytes] | BinaryIO,
+    *,
+    part_size: int = _DEFAULT_PART_SIZE,
+    content_type: str | None = None,
+    region_name: str | None = None,
+    profile_name: str | None = None,
+    config: BotoConfig | None = None,
+    session: boto3.Session | None = None,
+    endpoint_url: str | None = None,
+) -> str:
+    """Upload an iterator or file-like object to S3 using multipart.
+
+    ``data`` may be either an iterable yielding ``bytes`` (re-chunked
+    into parts of ``part_size`` bytes) or any file-like object with a
+    ``.read(n)`` method. ``part_size`` must be at least 5 MiB — the AWS
+    minimum — and defaults to 8 MiB. Content that fits in a single
+    part uses ``PutObject`` directly; otherwise a multipart upload is
+    started, each part uploaded, and the upload completed. On any
+    exception during the part loop the multipart upload is aborted on
+    a best-effort basis so you are not billed for orphaned parts.
+
+    Returns the final object's ``ETag``.
+    """
+    client = get_client(
+        "s3",
+        region_name=region_name,
+        profile_name=profile_name,
+        config=config,
+        session=session,
+        endpoint_url=endpoint_url,
+    )
+    return _upload_stream_on(
+        client, bucket, key, data, part_size=part_size, content_type=content_type
+    )
+
+
+def presigned_url(
+    bucket: str,
+    key: str,
+    *,
+    operation: Literal["get_object", "put_object"] = "get_object",
+    expires_in: int = 3600,
+    extra_params: Mapping[str, Any] | None = None,
+    region_name: str | None = None,
+    profile_name: str | None = None,
+    config: BotoConfig | None = None,
+    session: boto3.Session | None = None,
+    endpoint_url: str | None = None,
+) -> str:
+    """Return a presigned URL for a single S3 operation on ``bucket/key``.
+
+    ``operation`` selects the S3 method being presigned — ``get_object``
+    (default) for downloads, ``put_object`` for browser-side uploads.
+    ``expires_in`` is in seconds (default 1 hour). ``extra_params``
+    merges additional client parameters such as
+    ``ResponseContentDisposition`` for GETs or ``ContentType`` for PUTs.
+    URL signing is local to the client — no network call is made.
+    """
+    client = get_client(
+        "s3",
+        region_name=region_name,
+        profile_name=profile_name,
+        config=config,
+        session=session,
+        endpoint_url=endpoint_url,
+    )
+    return _presigned_url_on(
+        client,
+        bucket,
+        key,
+        operation=operation,
+        expires_in=expires_in,
+        extra_params=extra_params,
+    )
 
 
 def delete_object(
@@ -178,6 +379,42 @@ class S3Client:
     def put_object(self, bucket: str, key: str, body: bytes) -> None:
         with translate_errors():
             self._client.put_object(Bucket=bucket, Key=key, Body=body)
+
+    def upload_stream(
+        self,
+        bucket: str,
+        key: str,
+        data: Iterable[bytes] | BinaryIO,
+        *,
+        part_size: int = _DEFAULT_PART_SIZE,
+        content_type: str | None = None,
+    ) -> str:
+        return _upload_stream_on(
+            self._client,
+            bucket,
+            key,
+            data,
+            part_size=part_size,
+            content_type=content_type,
+        )
+
+    def presigned_url(
+        self,
+        bucket: str,
+        key: str,
+        *,
+        operation: Literal["get_object", "put_object"] = "get_object",
+        expires_in: int = 3600,
+        extra_params: Mapping[str, Any] | None = None,
+    ) -> str:
+        return _presigned_url_on(
+            self._client,
+            bucket,
+            key,
+            operation=operation,
+            expires_in=expires_in,
+            extra_params=extra_params,
+        )
 
     def delete_object(self, bucket: str, key: str) -> None:
         with translate_errors():

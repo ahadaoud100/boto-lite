@@ -8,6 +8,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.4.0] — 2026-04-18
 
 ### Added
+- `s3.upload_stream(bucket, key, data, *, part_size=8*1024*1024,
+  content_type=None)` and `S3Client.upload_stream` — upload an
+  iterable of `bytes` or a file-like object to S3 using multipart
+  under the hood. Content that fits in a single part falls back to
+  `PutObject`; multipart uploads abort on the way out if any part
+  fails, so orphaned parts are not left billable. Re-chunks
+  irregular input into exactly `part_size` parts (5 MiB minimum).
+- `s3.presigned_url(bucket, key, *, operation="get_object",
+  expires_in=3600, extra_params=None)` and
+  `S3Client.presigned_url` — first-class presigned URL helper for
+  `get_object` and `put_object` (no more `.raw.generate_presigned_url`
+  ceremony).
 - `sqs.send_batch(queue_url, bodies)` and
   `SQSClient.send_batch` — arbitrary-length sends, automatically
   chunked into the SQS 10-entry batch limit. Returns a

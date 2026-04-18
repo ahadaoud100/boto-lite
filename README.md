@@ -35,10 +35,11 @@ Python 3.10+. Sole runtime dependency: `boto3>=1.42.89`.
 - **Local development** against **LocalStack** via `endpoint_url` or a
   pre-built `boto3.Session`.
 
-If you need the entire S3 surface (multipart, presigned URLs,
-object-level ACLs, replication, …) reach for raw `boto3` or use
-`boto_lite`'s `raw` escape hatch (below). This library covers the
-everyday operations; it doesn't try to wrap every parameter AWS ships.
+If you need niche S3 features (object-level ACLs, replication,
+inventory, lifecycle rules, …) reach for raw `boto3` or use
+`boto_lite`'s `raw` escape hatch (below). The library covers the
+everyday operations including streaming multipart upload and
+presigned URLs; it doesn't try to wrap every parameter AWS ships.
 
 ## Two ways to call it
 
@@ -75,6 +76,13 @@ from boto_lite import S3Client, SQSClient, SecretsClient
 s3c = S3Client(region_name="eu-west-1")
 for k in s3c.list_keys("bkt", prefix="2026/"):
     s3c.delete_object("bkt", k)
+
+# Multipart upload from an iterator or file-like object.
+with open("dump.bin", "rb") as fh:
+    etag = s3c.upload_stream("bkt", "dump.bin", fh)  # 8 MiB parts
+
+# Presigned download URL, expires in an hour.
+url = s3c.presigned_url("bkt", "report.pdf", expires_in=3600)
 
 sqsc = SQSClient(endpoint_url="http://localhost:4566")    # LocalStack
 msg_id = sqsc.send(queue_url, "hi",
@@ -209,7 +217,10 @@ lazy evaluation. Wrap the iterator, not the call.
 **Covered today:**
 
 - **S3**: `get_object` (streaming), `put_object`, `delete_object`,
-  `list_keys` (paginated generator).
+  `list_keys` (paginated generator), `upload_stream` (multipart
+  from an iterator or file-like object — single-part fast path when
+  the data fits, multipart abort on failure), `presigned_url`
+  (first-class helper for GET/PUT URLs).
 - **SQS**: `send` (attrs, delay, FIFO group/dedup ids), `send_batch`
   (auto-chunks past the 10-entry limit, partial failures surfaced),
   `receive` (short or long poll), `delete`, `delete_batch`,
