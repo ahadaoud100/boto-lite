@@ -8,12 +8,12 @@ unbounded response data into memory.
 from __future__ import annotations
 
 import itertools
-from typing import Any, BinaryIO, Iterable, Iterator, Literal, Mapping
+from typing import Any, BinaryIO, Callable, Iterable, Iterator, Literal, Mapping
 
 import boto3
 from botocore.config import Config as BotoConfig
 
-from boto_lite._client import get_client, translate_errors
+from boto_lite._client import get_client, register_events, translate_errors
 from boto_lite.exceptions import ValidationError
 
 _MIN_PART_SIZE = 5 * 1024 * 1024  # AWS S3 multipart minimum (except last part)
@@ -356,6 +356,7 @@ class S3Client:
         config: BotoConfig | None = None,
         session: boto3.Session | None = None,
         endpoint_url: str | None = None,
+        events: Mapping[str, Callable[..., Any]] | None = None,
     ) -> None:
         self._client = get_client(
             "s3",
@@ -365,6 +366,7 @@ class S3Client:
             session=session,
             endpoint_url=endpoint_url,
         )
+        register_events(self._client, events)
 
     @property
     def raw(self) -> Any:

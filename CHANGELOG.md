@@ -5,6 +5,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## [0.4.1] — 2026-04-18
+
+### Added
+- `SecretsClient(jitter=0.1)` — per-entry TTL is spread downward by a
+  random fraction of `ttl` so a fleet of instances that cached the
+  same secret at the same moment do not all expire together and
+  stampede Secrets Manager. Default 10%; validates `0 <= jitter < 1`.
+  Pass `jitter=0.0` to opt out.
+- `events={event_name: handler, ...}` kwarg on `S3Client`, `SQSClient`,
+  and `SecretsClient` constructors — registers each pair on the
+  underlying `client.meta.events` so you can wire metrics, tracing, or
+  request-ID logging without reaching through `.raw`. Pass-through only
+  — we don't invent our own event names.
+
+### Changed
+- README: rewrote the top with a "Is this for you?" section that is
+  honest about where `boto-lite` is a bad fit (platform teams,
+  high-throughput S3, production SQS workers, any service outside
+  S3/SQS/Secrets) and what you give up vs raw boto3. Preferred over
+  the previous marketing-leaning persona list.
+
 ## [0.4.0] — 2026-04-18
 
 ### Added

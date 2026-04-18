@@ -106,6 +106,48 @@ class TtlCacheTest(unittest.TestCase):
         client.get("b")
         self.assertEqual(raw.get_secret_value.call_count, 4)
 
+    def test_jitter_validation_rejects_out_of_range(self) -> None:
+        session = MagicMock(spec=boto3.Session)
+        session.client.return_value = object()
+        with self.assertRaises(ValidationError):
+            SecretsClient(session=session, ttl=300, jitter=-0.01)
+        with self.assertRaises(ValidationError):
+            SecretsClient(session=session, ttl=300, jitter=1.0)
+
+    def test_jitter_applied_to_stored_expiry(self) -> None:
+        raw = MagicMock()
+        session = MagicMock(spec=boto3.Session)
+        session.client.return_value = raw
+        client = SecretsClient(session=session, ttl=300.0, jitter=0.1)
+        raw.get_secret_value.return_value = {
+            "ARN": _ARN, "Name": "foo", "SecretString": "v",
+        }
+        with patch("boto_lite.secrets.random.uniform") as uniform, \
+             patch("boto_lite.secrets.time.monotonic") as now:
+            # First monotonic() call sites: cache lookup (miss) and
+            # post-fetch expiry computation. Return 1000 for both.
+            now.return_value = 1_000.0
+            uniform.return_value = 0.8  # 20% early
+            client.get("foo")
+            uniform.assert_called_once_with(0.9, 1.0)
+        # Expiry = 1000 + 300 * 0.8 = 1240
+        _, expiry = client._cache[("foo", None, None)]
+        self.assertEqual(expiry, 1_000.0 + 300.0 * 0.8)
+
+    def test_jitter_zero_gives_exact_ttl(self) -> None:
+        raw = MagicMock()
+        session = MagicMock(spec=boto3.Session)
+        session.client.return_value = raw
+        client = SecretsClient(session=session, ttl=300.0, jitter=0.0)
+        raw.get_secret_value.return_value = {
+            "ARN": _ARN, "Name": "foo", "SecretString": "v",
+        }
+        with patch("boto_lite.secrets.time.monotonic") as now:
+            now.return_value = 1_000.0
+            client.get("foo")
+        _, expiry = client._cache[("foo", None, None)]
+        self.assertEqual(expiry, 1_300.0)
+
     def test_no_ttl_means_no_caching(self) -> None:
         raw = MagicMock()
         session = MagicMock(spec=boto3.Session)

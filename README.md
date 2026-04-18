@@ -24,22 +24,49 @@ pip install boto-lite        # or: uv add boto-lite
 
 Python 3.10+. Sole runtime dependency: `boto3>=1.42.89`.
 
-## Who this is for
+## Is this for you?
 
-- **One-off scripts** that need to move a few objects in or out of S3
-  without the full boto3 ceremony.
-- **AWS Lambda handlers** where you want readable control flow and
-  typed errors without pulling in a framework.
-- **Small services** that touch S3/SQS/Secrets from a handful of call
-  sites and benefit from a cached client per process.
-- **Local development** against **LocalStack** via `endpoint_url` or a
+**Good fit**
+
+- Solo developers and small teams writing scripts, Lambda handlers, or
+  small services that touch S3/SQS/Secrets from a handful of call sites.
+- Codebases where you've written the same 50-line boto3 wrapper three
+  times and want to stop.
+- Local development against **LocalStack** via `endpoint_url` or a
   pre-built `boto3.Session`.
 
-If you need niche S3 features (object-level ACLs, replication,
-inventory, lifecycle rules, …) reach for raw `boto3` or use
-`boto_lite`'s `raw` escape hatch (below). The library covers the
-everyday operations including streaming multipart upload and
-presigned URLs; it doesn't try to wrap every parameter AWS ships.
+**Bad fit — use something else**
+
+- **Platform / infrastructure teams** with their own AWS conventions.
+  Write your own wrapper; you'll be happier with full control over the
+  signatures, error model, and deprecation policy.
+- **Any AWS service other than S3, SQS, or Secrets Manager.** No
+  DynamoDB, SNS, Lambda, Kinesis, IAM, etc. Not coming.
+- **High-throughput S3 upload pipelines.** `upload_stream` is
+  single-threaded with no progress callback. Use boto3's
+  `upload_fileobj` / `s3transfer.TransferManager` for concurrent parts,
+  retries, and progress.
+- **Production SQS workers** that need DLQ handling, concurrent
+  processing, backpressure, or metrics. `consume` is a long-poll
+  while-loop with graceful shutdown — use Celery, Dramatiq, or a
+  purpose-built worker framework.
+
+**What you give up vs raw boto3**
+
+- A four-class exception hierarchy that collapses AWS's dozens of
+  specific error codes. The common dispatches (missing / auth /
+  bad-input / other) are easy; the long tail still requires inspecting
+  the underlying `ClientError.response["Error"]["Code"]`.
+- The internal client cache bypasses itself when you pass a custom
+  `config=`, so per-call custom retry/timeout policies give up the
+  "cached client per process" win (by design — `botocore.config.Config`
+  isn't cleanly hashable).
+- 0.x semver, one maintainer, no corporate backing. The surface is
+  small enough to fork and maintain privately if you need to, but
+  that's cold comfort for a large adoption decision.
+
+If you're outside the "good fit" set, stop reading and use raw boto3
+or a worker framework. The rest of this README assumes you're in it.
 
 ## Two ways to call it
 
@@ -108,6 +135,12 @@ again = sec.get("api/key")             # cached
 previous = sec.get("api/key", version_stage="AWSPREVIOUS")
 sec.invalidate("api/key")              # drop before next read
 ```
+
+`SecretsClient(ttl=...)` applies 10% jitter to per-entry expiry by
+default so a fleet of instances that cached the same secret at the
+same moment don't all expire together and stampede Secrets Manager.
+Override with `jitter=0.0` (exact TTL) or a larger value for bigger
+fleets — must satisfy `0 <= jitter < 1`.
 
 Each class exposes the same DI keyword arguments as the module
 functions: `region_name`, `profile_name`, `config`, `endpoint_url`,
@@ -187,6 +220,28 @@ body = b"".join(s3.get_object("b", "k", config=tight))
 With none of `config` / `session`, clients are cached per
 `(service, region_name, profile_name, endpoint_url)` behind a
 `threading.Lock` — threads share a single client safely.
+
+## Observability
+
+Bound clients accept an optional `events={}` mapping that registers
+handlers on the underlying botocore event system, so you can wire
+metrics, tracing, or request-ID logging without reaching through
+`.raw`:
+
+```python
+def log_call(event_name, **kwargs):
+    print(event_name, kwargs.get("operation_name"))
+
+s3c = S3Client(events={
+    "before-call.s3.PutObject": log_call,
+    "after-call.s3.PutObject":  log_call,
+})
+```
+
+The event names and kwargs are botocore's — see its event reference
+for the full schema of each hook. `.raw.meta.events.register(...)`
+works too; the `events` kwarg is just convenience for "attach N
+handlers at construction time."
 
 ## Error model
 

@@ -9,7 +9,7 @@ from typing import Any, Callable, Mapping, Sequence
 import boto3
 from botocore.config import Config as BotoConfig
 
-from boto_lite._client import get_client, translate_errors
+from boto_lite._client import get_client, register_events, translate_errors
 
 _BATCH_LIMIT = 10  # AWS SQS: max entries per SendMessageBatch / DeleteMessageBatch.
 
@@ -421,6 +421,7 @@ class SQSClient:
         config: BotoConfig | None = None,
         session: boto3.Session | None = None,
         endpoint_url: str | None = None,
+        events: Mapping[str, Callable[..., Any]] | None = None,
     ) -> None:
         self._client = get_client(
             "sqs",
@@ -430,6 +431,7 @@ class SQSClient:
             session=session,
             endpoint_url=endpoint_url,
         )
+        register_events(self._client, events)
 
     @property
     def raw(self) -> Any:

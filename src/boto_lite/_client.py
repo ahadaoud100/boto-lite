@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator, Mapping
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -108,6 +108,21 @@ def get_client(
                 client = new_session.client(service)
             _client_cache[key] = client
     return client
+
+
+def register_events(
+    client: Any, events: Mapping[str, Callable[..., Any]] | None
+) -> None:
+    """Register ``(event_name, handler)`` pairs on a boto3 client's
+    event system. No-op when ``events`` is ``None`` or empty. Handlers
+    receive the standard botocore event kwargs (``event_name``,
+    ``**kwargs`` — contents vary by event); see the botocore events
+    reference for the schema of each hook.
+    """
+    if not events:
+        return
+    for event_name, handler in events.items():
+        client.meta.events.register(event_name, handler)
 
 
 @contextmanager

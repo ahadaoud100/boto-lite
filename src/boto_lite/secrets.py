@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import random
 import threading
 import time
-from typing import Any
+from typing import Any, Callable, Mapping
 
 import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
-from boto_lite._client import get_client, translate_errors
+from boto_lite._client import get_client, register_events, translate_errors
 from boto_lite.exceptions import BotoLiteError, ValidationError
 
 
@@ -182,22 +183,33 @@ class SecretsClient:
     version_stage)`` tuple within the TTL window return the cached
     value without calling Secrets Manager. The cache is per-instance
     and thread-safe. Invalidate entries with :meth:`invalidate`.
+
+    ``jitter`` spreads per-entry expiry downward by a random fraction
+    of ``ttl`` so a fleet of instances that cached the same secret at
+    the same moment do not all expire together and stampede Secrets
+    Manager. Each entry's effective TTL is ``ttl * uniform(1-jitter,
+    1)``; the cache never exceeds ``ttl``. Default 0.1 (10%). Pass
+    ``0.0`` to disable.
     """
 
-    __slots__ = ("_client", "_ttl", "_cache", "_cache_lock")
+    __slots__ = ("_client", "_ttl", "_jitter", "_cache", "_cache_lock")
 
     def __init__(
         self,
         *,
         ttl: float | None = None,
+        jitter: float = 0.1,
         region_name: str | None = None,
         profile_name: str | None = None,
         config: BotoConfig | None = None,
         session: boto3.Session | None = None,
         endpoint_url: str | None = None,
+        events: Mapping[str, Callable[..., Any]] | None = None,
     ) -> None:
         if ttl is not None and ttl <= 0:
             raise ValidationError("ttl must be positive")
+        if not 0.0 <= jitter < 1.0:
+            raise ValidationError("jitter must satisfy 0 <= jitter < 1")
         self._client = get_client(
             "secretsmanager",
             region_name=region_name,
@@ -206,7 +218,9 @@ class SecretsClient:
             session=session,
             endpoint_url=endpoint_url,
         )
+        register_events(self._client, events)
         self._ttl: float | None = ttl
+        self._jitter = jitter
         self._cache: dict[tuple[str, str | None, str | None], tuple[str | bytes, float]] = {}
         self._cache_lock = threading.Lock()
 
@@ -240,8 +254,9 @@ class SecretsClient:
                 return hit[0]
         # Fetch outside the lock; tolerate duplicate in-flight fetches.
         value = self._fetch(name, version_id, version_stage)
+        effective_ttl = self._ttl * random.uniform(1.0 - self._jitter, 1.0)
         with self._cache_lock:
-            self._cache[key] = (value, time.monotonic() + self._ttl)
+            self._cache[key] = (value, time.monotonic() + effective_ttl)
         return value
 
     def invalidate(self, name: str | None = None) -> None:
