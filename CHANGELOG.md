@@ -5,6 +5,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## [0.3.1] — 2026-04-18
+
+### Fixed
+- `release.yml`: run `twine check` via `uvx` instead of
+  `uv pip install --system twine`. The previous approach failed on the
+  GitHub runner's PEP 668 externally-managed system Python, which
+  blocked the 0.3.0 tag from publishing. No library changes — 0.3.1
+  is 0.3.0's code with a fixed release pipeline.
+
 ## [0.3.0] — 2026-04-18
 
 ### Added
