@@ -5,6 +5,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## [0.4.0] — 2026-04-18
+
+### Added
+- `sqs.send_batch(queue_url, bodies)` and
+  `SQSClient.send_batch` — arbitrary-length sends, automatically
+  chunked into the SQS 10-entry batch limit. Returns a
+  `SendBatchResult` with per-input `message_ids` (or `None` on
+  failure) and a `failures` list of `BatchFailure(index, code,
+  message, sender_fault)`.
+- `sqs.delete_batch(queue_url, receipt_handles)` and
+  `SQSClient.delete_batch` with the same chunking and failure
+  surfacing via `DeleteBatchResult`.
+- `sqs.consume(queue_url, handler, *, stop, ...)` and
+  `SQSClient.consume` — long-poll consumer loop with
+  delete-on-success, keep-on-exception (re-delivered after the
+  visibility timeout), optional `on_error(msg, exc)` callback, and
+  `threading.Event`-based graceful shutdown.
+- `SecretsClient(ttl=...)` — in-process TTL cache for `get` calls,
+  keyed on `(name, version_id, version_stage)`. Thread-safe
+  (`threading.Lock`). `.invalidate(name=None)` clears specific or all
+  entries.
+- New public exports: `Message`, `BatchFailure`, `SendBatchResult`,
+  `DeleteBatchResult`.
+
+### Fixed
+- CI `LocalStack integration` job: pin `docker-compose.yml` to
+  `localstack/localstack:3` (community stable). The floating
+  `latest` tag had started resolving to a Pro dev build that
+  required license activation and exited with code 55.
+
 ## [0.3.1] — 2026-04-18
 
 ### Fixed

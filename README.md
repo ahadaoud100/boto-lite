@@ -81,9 +81,24 @@ msg_id = sqsc.send(queue_url, "hi",
                    message_group_id="g1",
                    message_deduplication_id="d1")        # FIFO
 
-sec = SecretsClient(profile_name="prod")
-current = sec.get("api/key")
+# Arbitrary-length batch send; library chunks to SQS's 10-entry limit.
+result = sqsc.send_batch(queue_url, [f"msg-{i}" for i in range(37)])
+if not result.all_succeeded:
+    retry = [queue_url for f in result.failures]  # reach out via f.index
+
+# Long-poll consumer loop with graceful shutdown:
+stop = threading.Event()
+
+def handle(msg):
+    process(msg.body)  # raise to leave the message for redelivery
+
+sqsc.consume(queue_url, handle, stop=stop, wait_seconds=20)
+
+sec = SecretsClient(profile_name="prod", ttl=300)  # 5-minute cache
+current = sec.get("api/key")           # fetches
+again = sec.get("api/key")             # cached
 previous = sec.get("api/key", version_stage="AWSPREVIOUS")
+sec.invalidate("api/key")              # drop before next read
 ```
 
 Each class exposes the same DI keyword arguments as the module
@@ -195,12 +210,18 @@ lazy evaluation. Wrap the iterator, not the call.
 
 - **S3**: `get_object` (streaming), `put_object`, `delete_object`,
   `list_keys` (paginated generator).
-- **SQS**: `send` (attrs, delay, FIFO group/dedup ids), `receive`
-  (short or long poll), `delete`, a frozen `Message` dataclass.
+- **SQS**: `send` (attrs, delay, FIFO group/dedup ids), `send_batch`
+  (auto-chunks past the 10-entry limit, partial failures surfaced),
+  `receive` (short or long poll), `delete`, `delete_batch`,
+  `consume(queue_url, handler, stop=event)` — long-poll loop with
+  delete-on-success, keep-on-exception, optional `on_error` callback,
+  and graceful shutdown via `threading.Event`. Frozen `Message`
+  dataclass.
 - **Secrets Manager**: `get` (string or binary, with `version_id` /
   `version_stage`), `put` (create-or-update, string or binary),
   `delete` (`recovery_window_in_days` or
-  `force_delete_without_recovery`).
+  `force_delete_without_recovery`). `SecretsClient(ttl=...)` offers
+  an in-process TTL cache with `.invalidate(name=None)`.
 - Cross-cutting: thread-safe cached clients, session/endpoint/profile
   injection, typed error translation.
 

@@ -1,6 +1,6 @@
 services:
   localstack:
-    image: localstack/localstack:latest
+    image: localstack/localstack:3
     container_name: boto-lite-localstack
     ports:
       - "4566:4566"

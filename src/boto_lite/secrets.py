@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 
 import boto3
@@ -174,19 +176,28 @@ class SecretsClient:
     Use this when you make repeated calls with non-default configuration
     and want to avoid the per-call client-construction cost of the
     module-level ``secrets.*`` functions.
+
+    Pass ``ttl`` (in seconds) to enable an in-process cache for
+    :meth:`get`. Subsequent reads of the same ``(name, version_id,
+    version_stage)`` tuple within the TTL window return the cached
+    value without calling Secrets Manager. The cache is per-instance
+    and thread-safe. Invalidate entries with :meth:`invalidate`.
     """
 
-    __slots__ = ("_client",)
+    __slots__ = ("_client", "_ttl", "_cache", "_cache_lock")
 
     def __init__(
         self,
         *,
+        ttl: float | None = None,
         region_name: str | None = None,
         profile_name: str | None = None,
         config: BotoConfig | None = None,
         session: boto3.Session | None = None,
         endpoint_url: str | None = None,
     ) -> None:
+        if ttl is not None and ttl <= 0:
+            raise ValidationError("ttl must be positive")
         self._client = get_client(
             "secretsmanager",
             region_name=region_name,
@@ -195,10 +206,22 @@ class SecretsClient:
             session=session,
             endpoint_url=endpoint_url,
         )
+        self._ttl: float | None = ttl
+        self._cache: dict[tuple[str, str | None, str | None], tuple[str | bytes, float]] = {}
+        self._cache_lock = threading.Lock()
 
     @property
     def raw(self) -> Any:
         return self._client
+
+    def _fetch(
+        self, name: str, version_id: str | None, version_stage: str | None
+    ) -> str | bytes:
+        with translate_errors():
+            resp = self._client.get_secret_value(
+                **_get_kwargs(name, version_id, version_stage)
+            )
+            return _unwrap_secret(name, resp)
 
     def get(
         self,
@@ -207,11 +230,33 @@ class SecretsClient:
         version_id: str | None = None,
         version_stage: str | None = None,
     ) -> str | bytes:
-        with translate_errors():
-            resp = self._client.get_secret_value(
-                **_get_kwargs(name, version_id, version_stage)
-            )
-            return _unwrap_secret(name, resp)
+        if self._ttl is None:
+            return self._fetch(name, version_id, version_stage)
+        key = (name, version_id, version_stage)
+        now = time.monotonic()
+        with self._cache_lock:
+            hit = self._cache.get(key)
+            if hit is not None and now < hit[1]:
+                return hit[0]
+        # Fetch outside the lock; tolerate duplicate in-flight fetches.
+        value = self._fetch(name, version_id, version_stage)
+        with self._cache_lock:
+            self._cache[key] = (value, time.monotonic() + self._ttl)
+        return value
+
+    def invalidate(self, name: str | None = None) -> None:
+        """Drop cache entries. Pass ``name`` to invalidate only that
+        secret's entries (across all version ids/stages), or omit it
+        to clear the entire cache. No-op when the cache is disabled.
+        """
+        if self._ttl is None:
+            return
+        with self._cache_lock:
+            if name is None:
+                self._cache.clear()
+            else:
+                for key in [k for k in self._cache if k[0] == name]:
+                    del self._cache[key]
 
     def put(self, name: str, value: str | bytes) -> None:
         payload = _put_payload(value)

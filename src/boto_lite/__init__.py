@@ -9,7 +9,13 @@ from boto_lite.exceptions import (
 )
 from boto_lite.s3 import S3Client
 from boto_lite.secrets import SecretsClient
-from boto_lite.sqs import SQSClient
+from boto_lite.sqs import (
+    BatchFailure,
+    DeleteBatchResult,
+    Message,
+    SendBatchResult,
+    SQSClient,
+)
 
 __all__ = [
     "s3",
@@ -18,6 +24,10 @@ __all__ = [
     "S3Client",
     "SQSClient",
     "SecretsClient",
+    "Message",
+    "BatchFailure",
+    "SendBatchResult",
+    "DeleteBatchResult",
     "BotoLiteError",
     "NotFoundError",
     "AuthError",
